@@ -4,7 +4,9 @@
 const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const G = window.GLOSS || {};
-const INDEX = window.PAPER_INDEX || [];
+const SITE = window.__SITE || null;          // set when served inside the French with Haresh site (student / review / preview)
+const INDEX = SITE ? [{ id: SITE.paper, ready: true }] : (window.PAPER_INDEX || []);
+const imgUrl = s => SITE ? SITE.assetBase + s.replace(/^img\//, '').replace('/', '_') : s;
 const MASTER_HINT = '';
 
 /* ---------- tiny storage helpers (may be blocked in some frames) ---------- */
@@ -45,7 +47,7 @@ function route() {
 function loadPaper(p) {
   const go = () => openPaper(window.PAPERS[p.id]);
   if (window.PAPERS && window.PAPERS[p.id]) return go();
-  const s = document.createElement('script'); s.src = `data/${p.id}.js`; s.onload = go;
+  const s = document.createElement('script'); s.src = SITE ? SITE.assetBase + p.id + '.js' : `data/${p.id}.js`; s.onload = go;
   s.onerror = () => alert('Could not load this paper.');
   document.head.appendChild(s);
 }
@@ -54,7 +56,7 @@ function loadPaper(p) {
 function openPaper(P) {
   state.paper = P; state.active = null; state.sec = 0; state.reveal = false;
   document.body.classList.remove('reveal');
-  state.answers = sget('fh-ans-' + P.id, {});
+  state.answers = sget((SITE ? 'fh-s-' + (SITE.assignment || SITE.test || '') + '-' : 'fh-ans-') + P.id, {});
   $('#home').hidden = true; $('#reader').hidden = false;
   $('#ptitle').textContent = 'Reading · Paper ' + P.code.split('/')[1]; $('#psub').textContent = P.session;
   document.body.classList.toggle('aids', state.aids);
@@ -74,13 +76,14 @@ function openPaper(P) {
   applyUnlock();
   gotoSection(0, true);
   setSheet('idle');
+  if (SITE) window.dispatchEvent(new Event('fh-open'));
 }
 
 function pageEl(k, pi) { return panes[k].pages[pi]; }
 
 function buildPage(P, pg, pi, k, sc) {
   const d = document.createElement('div'); d.className = 'page'; d.dataset.p = pi;
-  const img = document.createElement('img'); img.src = pg.img; img.alt = 'Page ' + (pi + 1); img.loading = 'lazy'; img.draggable = false;
+  const img = document.createElement('img'); img.src = imgUrl(pg.img); img.alt = 'Page ' + (pi + 1); img.loading = 'lazy'; img.draggable = false;
   d.appendChild(img);
   const ov = document.createElement('div'); ov.className = 'ov'; d.appendChild(ov);
   const W = pg.w, H = pg.h;
@@ -304,7 +307,7 @@ function renderHelp(qid, tab) {
   }
   if (tab === 'ans') {
     const A = state.unlocked[P.id];
-    if (!A) { c.innerHTML = '<p>The answers are revealed by your teacher.</p>'; const bt = document.createElement('button'); bt.className = 'primary'; bt.textContent = '🔒 Teacher code'; bt.onclick = openLock; c.appendChild(bt); }
+    if (!A) { c.innerHTML = '<p>The answers are revealed by your teacher.</p>'; if (!SITE) { const bt = document.createElement('button'); bt.className = 'primary'; bt.textContent = '🔒 Teacher code'; bt.onclick = openLock; c.appendChild(bt); } }
     else { const a = A[qid]; const arr = Array.isArray(a.a) ? a.a : [a.a];
       c.innerHTML = '<div class="ansbox">' + arr.map((t, i) => `<div class="a">${arr.length > 1 ? (i + 1) + ' ' : ''}${esc(t)}</div>`).join('') + (a.n ? `<div class="n">Examiner note — ${esc(a.n)}</div>` : '') + '</div>'; }
   }
@@ -321,7 +324,8 @@ function hideEvidence() { $$('.ev.on').forEach(e => e.classList.remove('on')); }
 
 /* ---------- answers ---------- */
 function setAnswer(q, o, val, src) {
-  const key = q + '|' + o; state.answers[key] = val; sset('fh-ans-' + state.paper.id, state.answers);
+  if (state.locked) return;
+  const key = q + '|' + o; state.answers[key] = val; sset((SITE ? 'fh-s-' + (SITE.assignment || SITE.test || '') + '-' : 'fh-ans-') + state.paper.id, state.answers); siteTouch();
   $$('input[data-q="' + q + '"]').forEach(e => { if (e.dataset.o === o && e !== src) e.value = val; });
   syncTicks(q); gradeAll();
 }
@@ -352,6 +356,7 @@ function openModal(html) { $('#modalCard').innerHTML = html; $('#modal').hidden 
 function closeModal() { $('#modal').hidden = true; }
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
 function openLock() {
+  if (SITE) return siteLock();
   const P = state.paper;
   if (state.unlocked[P.id]) {
     openModal(`<h3>🔓 Teacher mode</h3><p>Answers for this paper are unlocked on this device.</p>
@@ -421,9 +426,68 @@ $('#btnSplit').onclick = () => { if (!state.split) { state.split = true; state.r
   layout(false); gotoSection(state.sec, true); };
 $('#btnNotes').onclick = openNotes;
 $('#btnLock').onclick = openLock;
-window.addEventListener('hashchange', route);
+if (!SITE) window.addEventListener('hashchange', route);
 document.addEventListener('DOMContentLoaded', () => {});
 document.addEventListener('scroll', e => { if (e.target && e.target.parentElement && e.target.parentElement.id === 'paneB') onScrollB(); }, true);
 
-renderHome(); route();
+/* ---------- inside the French with Haresh site ---------- */
+let saveTm = null, subAt = null, pollTm = null;
+const toKey = k => k.replace('|', '_'), fromKey = k => { const i = k.indexOf('_'); return i < 0 ? k + '|' : k.slice(0, i) + '|' + k.slice(i + 1); };
+function siteTouch() { if (!SITE || SITE.mode !== 'student' || state.locked) return; clearTimeout(saveTm); saveTm = setTimeout(() => siteSave(false), 2500); }
+function toast(t, ok) { let n = $('#flash'); if (!n) { n = document.createElement('div'); n.id = 'flash'; n.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:99;padding:12px 18px;border-radius:14px;font-weight:700;font-size:15px;box-shadow:0 6px 24px rgba(0,0,0,.25);max-width:90vw;text-align:center'; document.body.append(n); }
+  n.style.background = ok ? '#e6f7ec' : '#fdecea'; n.style.color = ok ? '#146c2e' : '#a12a1f'; n.textContent = t; n.hidden = false; clearTimeout(n._t); n._t = setTimeout(() => { n.hidden = true; }, 5000); }
+async function siteSave(final) {
+  if (SITE.mode !== 'student') { if (final) toast('Preview only: nothing is saved.', true); return; }
+  const v = {}; Object.keys(state.answers).forEach(k => { const x = String(state.answers[k] == null ? '' : state.answers[k]).slice(0, 300); if (x) v[toKey(k)] = x; });
+  try {
+    const r = await fetch('/api/student/tests/' + SITE.assignment + '/mine', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: { v }, submit: !!final }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { if (final) toast('⚠️ ' + (j.error || 'Could not hand in. Try again.'), false); return; }
+    if (final) { subAt = j.submitted_at; toast('✅ Handed in! Your teacher will unlock the answers later.', true); siteBtn(); }
+  } catch (e) { if (final) toast('⚠️ No internet. Your answers are saved on this device — press Hand in again when you are online.', false); }
+}
+function siteBtn() { const b = $('#btnLock'); if (SITE.mode === 'student') { b.textContent = state.locked ? '✅' : (subAt ? '📨✓' : '📨'); b.title = 'Hand in'; } else b.textContent = state.unlocked[state.paper.id] ? '🔓' : '🔒'; }
+function setLocked(on) { state.locked = on; document.body.classList.toggle('locked', on); $$('input.fb,.tk').forEach(e => { if (e.tagName === 'INPUT') e.disabled = on; }); }
+function siteLock() {
+  const P = state.paper;
+  if (SITE.mode === 'student') {
+    if (state.locked) { openModal('<h3>✅ Answers unlocked</h3><p>Your teacher has unlocked the answers. Green = correct. The official answer is printed under each line.</p><div class="row"><button class="primary" id="mClose">Close</button></div>'); $('#mClose').onclick = closeModal; return; }
+    openModal(`<h3>📨 Hand in</h3><p>${subAt ? 'You already handed in. You can still change your answers and hand in again.' : 'When you have finished, hand in your answers. Your teacher unlocks the correct answers later.'}</p><div class="row"><button class="ghost" id="mClose">Not yet</button><button class="primary" id="mGo">Hand in</button></div>`);
+    $('#mClose').onclick = closeModal; $('#mGo').onclick = () => { closeModal(); siteSave(true); }; return;
+  }
+  openModal(`<h3>🔓 Teacher view</h3><p>${SITE.mode === 'review' ? esc(SITE.sname || 'Student') + '’s answers with the official answers.' : 'Preview: you can see the official answers.'}</p>
+    <label class="sw"><input type="checkbox" id="swReveal" ${state.reveal ? 'checked' : ''}> <span><b>Show the answers on the paper</b><br><small class="legend">Marks ✓ / ✗ on letters and numbers; prints the official answer under each written line.</small></span></label>
+    <p class="legend"><b>Examiner codes:</b> HA = harmless extra · INV = this extra word cancels the mark · tc = not enough on its own.</p>
+    <div class="row"><button class="primary" id="mClose">Close</button></div>`);
+  $('#swReveal').onchange = e => setReveal(e.target.checked); $('#mClose').onclick = closeModal;
+}
+function applyKey(A) { const P = state.paper; state.unlocked[P.id] = A; applyUnlock(); siteBtn(); }
+async function siteJson(u) { const r = await fetch(u, { credentials: 'same-origin', cache: 'no-store' }); return r.json(); }
+async function siteInit() {
+  const P = state.paper;
+  $('#back').onclick = () => { location.href = SITE.mode === 'student' ? '/#/s/tests' : '/#/t/tests'; };
+  $('#back').title = 'Back to tests';
+  try {
+    if (SITE.mode === 'student') {
+      const m = await siteJson('/api/student/tests/' + SITE.assignment + '/mine');
+      if (m && m.answers && m.answers.v && Object.keys(m.answers.v).length) { state.answers = {}; Object.keys(m.answers.v).forEach(k => { state.answers[fromKey(k)] = m.answers.v[k]; }); restoreAnswers(); }
+      subAt = m && m.submitted_at || null;
+      const checkKey = async () => { const j = await siteJson('/api/student/tests/' + SITE.assignment + '/answers'); if (j && j.released) { clearInterval(pollTm); setLocked(true); applyKey(j.answers); setReveal(true); } };
+      await checkKey(); if (!state.locked) pollTm = setInterval(checkKey, 20000);
+    } else if (SITE.mode === 'review') {
+      const j = await siteJson('/api/tests/assignments/' + SITE.assignment + '/submission/' + SITE.sid);
+      state.answers = {}; const v = (j.answers && j.answers.v) || {}; Object.keys(v).forEach(k => { state.answers[fromKey(k)] = v[k]; });
+      restoreAnswers(); setLocked(true); applyKey(j.key); setReveal(true);
+    } else {
+      const j = await siteJson('/api/tests/answers/' + SITE.test); if (j && j.released) applyKey(j.answers);
+    }
+  } catch (e) { /* offline: the paper still works */ }
+  siteBtn();
+}
+if (SITE) {
+  document.title = SITE.title || document.title; $('#home').hidden = true;
+  const g = document.createElement('script'); g.src = SITE.assetBase + 'gloss.js';
+  g.onload = () => { loadPaper({ id: SITE.paper }); window.addEventListener('fh-open', siteInit, { once: true }); };
+  g.onerror = () => alert('Could not load this paper.'); document.head.appendChild(g);
+} else { renderHome(); route(); }
 })();
